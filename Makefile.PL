@@ -3,9 +3,6 @@ use English;
 # See lib/ExtUtils/MakeMaker.pm for details of how to influence
 # the contents of the Makefile that is written.
 
-
-$abstract = "Database independent text indexing. Currently postgres only";
-
 WriteMakefile(
 	      NAME	     => 'DBIx::TextSearch',
 	      VERSION_FROM => 'lib/DBIx/TextSearch.pm',
@@ -23,6 +20,6 @@ WriteMakefile(
 			           => '$(INST_LIBDIR)/TextSearch/Pg.pm'
 			       },
 	      ($] >= 5.005 ?
-	       (ABSTRACT => $abstract,
-		AUTHOR     => 'Stephen Patterson <steve@lexx.uklinux.net>') :())
+	       (ABSTRACT => "Database independent text indexing. Currently postgres only",
+		AUTHOR     => 'Stephen Patterson <steve@patter.mine.nu>') :())
 	      );

@@ -8,6 +8,9 @@ separately for each database (such as DBIx::TextSearch::Pg).
 
 See the code and comments in TextSearch/Pg.pm for further details.
 
+*Danger Will Robinson* The code itself is probably more recent than
+this documentation
+
 =head3 Requirements
 
 =over 4

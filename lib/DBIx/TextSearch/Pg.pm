@@ -9,34 +9,63 @@ package DBIx::TextSearch;
 ######################################################################
 sub CreateIndex {
     # create database tables
-    # tables: _doc_ID - URI, title, docID
+    # tables: _doc_ID - URI, title, docID, md5
     #         _words  - w_ID, word
     #         _description   - m_ID, meta desription
 
     my $self = shift();
     my $dbh = $self->{dbh};
 
-    my $index_name = $self->{name};
+    # see if this index seems to exist - don't want to overwrite an
+    # existing index
+    my @tables = $dbh->tables;
+    my $exists = undef;
+    foreach my $table (@tables) {
+	if ($table =~ m/$name_(docid|words|description)/) {
+	    # index tables exist
+	    croak "Creating index $name would use some existing tables. Aborting\n";
+	}
+    }
+
 
     # prep SQL statements to create index tables
     my $sql_docID = "create table $self->{name}_docID (" .
-	"URI varchar(255), title varchar(100), d_ID int4, mtime bigint)";
+	"URI varchar(255), title varchar(100), d_ID int4, md5 varchar(50))";
     my $sql_words = "create table $self->{name}_words (" .
 	"w_ID int4, word text)"; 
     my $sql_meta = "create table $self->{name}_description (" .
 	"m_ID int4, description text)";
 
     # create index tables
-    $dbh->do($sql_docID) or Carp::croak $dbh->errstr;
-    $dbh->do($sql_words) or Carp::croak $dbh->errstr;
-    $dbh->do($sql_meta)  or Carp::croak $dbh->errstr;
+    $dbh->do($sql_docID) or croak $dbh->errstr;
+    $dbh->do($sql_words) or croak $dbh->errstr;
+    $dbh->do($sql_meta)  or croak $dbh->errstr;
+}
+######################################################################
+sub RemoveDocument {
+    # remove a single document from the database
+    my ($self, $uri) = @_;
+    my $sql = "delete from $self->{name}_docid, $self->{name}_words, " .
+      "$self->{name}_description where uri='$uri' and ((w_id = d_id) and ".
+      "(m_id = d_id))";
+    $self->{dbh}->do($sql) or carp("Can't delete document $uri: $self->{dbh}->errstr");
 }
 ######################################################################
 sub IndexFile {
     # given URI, title, description, document
     # contents, index this document calling syntax:
-    # $self->IndexFile($params{uri}, $title, $description, $mtime  $content);
-    my ($self, $uri, $title, $desc, $mtime, $content) = @_;
+    # $self->IndexFile($params{uri}, $title, $description, $md5  $content);
+    my ($self, $uri, $title, $desc, $md5, $content) = @_;
+
+    # remove this document from the index if it has been indexed previously
+    my $sql = "select d_id from $self->{name}_docid where uri = $uri";
+    my $sth = $self->{dbh}->prepare($sql);
+    $sth->execute();
+    if ($sth->rows > 0) {
+	$self->RemoveDocument($uri);
+    }
+    $sth->finish;
+    undef ($sql, $sth);
 
     my $doc = \$content; # HTML::TokeParser needs a ref to document
                          # content, DBI inserts the raw ref
@@ -44,7 +73,7 @@ sub IndexFile {
 
     # find a unique document ID number for this document
     my $sql_docid = "select d_id from " . $self->{name} . "_docID order " .
-	"by d_id desc limit 1,0";
+	"by d_id desc limit 1 offset 0";
     my $sth_docid = $self->{dbh}->prepare($sql_docid);
     $sth_docid->execute();
 
@@ -56,19 +85,19 @@ sub IndexFile {
     # insert values into database.
     #
 
-    # URI, title, doc_id, mtime
-    my $sql_main = "insert into " . $self->{name} . "_docID " .
-	"(URI, title, d_ID, mtime) values ('$uri', '$title', '$docid', '$mtime')";
+    # URI, title, doc_id, md5
+    my $sql_main = "insert into " . $self->{name} . "_docid " .
+	"(uri, title, d_id, md5) values ('$uri', '$title', '$docid', '$md5')";
     $self->{dbh}->do($sql_main) or say $sql_main;
 
     # words
     my $sql_words = "insert into $self->{name}_words " .
-	"(w_ID, word) values ('$docid', '$content')";
+	"(w_id, word) values ('$docid', '$content')";
     $self->{dbh}->do($sql_words);
 
     # meta description
     my $sql_meta = "insert into " . $self->{name} . "_description " .
-	"(m_ID, description) values ('$docid', '$desc')";
+	"(m_id, description) values ('$docid', '$desc')";
     $self->{dbh}->do($sql_meta);
 
     # this document is now indexed.
@@ -98,7 +127,7 @@ sub GetQuery {
 				  'title, description, word'
 				 );
     } else {
-	Carp::croak "parser type not defined\n";
+        carp "parser type not defined\n";
     }
 
     # generate the query
@@ -117,37 +146,28 @@ sub FlushIndex {
 		  "$self->{name}_description");
 
     foreach my $table (@tables) {
-	$self->{dbh}->do("delete from $table") 
-	    or Carp::cluck "Can't remove contents of index table $table: ". 
+	$self->{dbh}->do("delete from $table")
+	    or cluck "Can't remove contents of index table $table: ".
 	      $dbh->errstr;
     }
 }
 ######################################################################
-sub MTime {
-    # return the mtime for an index document
+sub MD5 {
+    # return the md5sum for an indexed document
     # timestamp of indexed file
     my ($self, $doc) = @_;
-    my $qry = "select mtime from $self->{name}_docID where " .
+    print "Doc uri $doc\n";
+    my $qry = "select md5 from $self->{name}_docid where " .
       "uri = '$doc'";
-    say "query for indexed timestamp: $qry\n";
+
+    say "query for indexed md5sum: $qry\n";
+
     my $sth = $self->{dbh}->prepare($qry);
     $sth->execute;
-    my @time = $sth->fetchrow_array;
-    my $dbtime = $time[0];
-    my $rows = $sth->rows;
-    # set db mtime to -1 if document not already indexed to make sure
-    # that documents not already index get indexed.
-    if ($rows == 0) { $dbtime = '-1' }
-    return $dbtime;
-}
-######################################################################
-sub RemoveDocument {
-    # remove a single document from the database
-    my ($self, $doc) = @_;
-    my $sql = "delete from $self->{name}_docid, $self->{name}_words, " .
-      "$self->{name}_description where uri='$loc' and ((w_id = d_id) and ".
-      "(m_id = d_id))";
-    $self->{dbh}->do($sql);
+    my @md5 = $sth->fetchrow_array;
+    my $md5_db = shift @md5;
+    unless ($md5_db ) { $md5_db = 'none' }
+    return $md5_db;
 }
 ######################################################################
 1;

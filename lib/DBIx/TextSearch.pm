@@ -9,7 +9,7 @@
 package DBIx::TextSearch;
 
 use DBI;
-use Carp qw(croak cluck); # croak is die, cluck is warn;
+use Carp qw(croak cluck carp); # croak is die, cluck is warn;
 use Env qw(TEMP TMP);
 use English;
 use Net::FTP;
@@ -22,14 +22,18 @@ use URI;
 use File::Basename;
 use HTML::TokeParser;
 use strict;
-use warnings;
+use warnings; # - incompatible due to SGML::StripParser
 use Socket;
 use Sys::Hostname;
-$VERSION = '0.1';
+use Digest::MD5 qw/md5_hex/;
+$DBIx::TextSearch::VERSION = '0.2';
 
 ######################################################################
 sub say {
-    print @_;
+    my $self = shift();
+    if ($self->{debug}) {
+	print @_;
+    }
 }
 ######################################################################
 #sub AUTOLOAD {
@@ -56,12 +60,16 @@ sub new {
     my $self = {};
     my $dbh = shift;
     my $name = shift;
+    my %par = @_;
 
     # set database handle
     $self->{dbh} = $dbh;
 
     # set index name
     $self->{name} = $name;
+
+    # debug
+    $self->{debug} = $par{debug};
 
     # test for sufficient parameters
     unless ($self->{dbh}) {
@@ -73,7 +81,7 @@ sub new {
 
     bless $self, $type;
     # create appropriate tables
-    $self->CreateIndex or croak "Can't create index\n";
+    $self->CreateIndex; # CreateIndex will return its own errors
 
     # end.
     return $self, $type;
@@ -85,12 +93,16 @@ sub open {
     my $self = {};
     my $dbh = shift;
     my $name = shift;
+    my %par = @_;
 
     # set database handle
     $self->{dbh} = $dbh;
 
     # set index name
     $self->{name} = $name;
+
+    # debug
+    $self->{debug} = $par{debug};
 
     # test for sufficient parameters
     unless ($self->{dbh}) {
@@ -104,15 +116,15 @@ sub open {
     my @tables = $dbh->tables;
     my $exists = undef;
     foreach my $table (@tables) {
-	if ($table =~ m/$name/) {
+	if ($table =~ m/$name_(docid|words|description)/) {
 	    # index tables exist
-	    $exists = "True";
+	    $exists = 'True';
 	}
     }
 
     # die with message if index tables don't exist
     if ($exists ne "True") {
-	Carp::croak "Index $name is not available";
+	croak "Index $name is not available";
     }
 
     # else return an index object
@@ -138,7 +150,7 @@ sub _get_unique_filename {
 }
 ######################################################################
 sub _ftp {
-    say "fetching via ftp\n";
+    $self->say "fetching via ftp\n";
     # fetch a file via ftp and store locally
     my $url = shift();
     # parse an url like ftp://user:password@foo.bar.com/wibble/barf.txt into
@@ -156,14 +168,14 @@ sub _ftp {
 	$passwd = $auth;
 	$passwd =~ s/$username://;
 	$passwd =~ s/@.*//;
-	say "auth'd ftp\nusername: $username\nPassword $passwd\n"
+	$self->say "auth'd ftp\nusername: $username\nPassword $passwd\n"
     } else {
 	# set username to anonymous, password to local (linux) email address
 	$username = 'anonymous';
 	my $hostname = `hostname`; # need to get domain name as well.
 	my $me = $ENV{USER};
 	$passwd = $me . '@' . $hostname;
-	say "anon ftp\nuser : $username\npass : $passwd\n";
+	$self->say "anon ftp\nuser : $username\npass : $passwd\n";
     }
 
     # remove remote file name from $path into a separate variable
@@ -175,10 +187,10 @@ sub _ftp {
     my $local_file = _get_unique_filename();
 
     # fetch the file
-    say "logging into $host as $username with password $passwd\n";
+    $self->say "logging into $host as $username with password $passwd\n";
     my $ftp = Net::FTP->new($host,
-			   Debug => 1,
-			   Passive => 1);
+			    Debug => 1,
+			    Passive => 1);
     $ftp->login($username, $passwd);
     $ftp->cwd("$dir");
     $ftp->ascii();
@@ -186,7 +198,7 @@ sub _ftp {
     $ftp->quit();
 
     # file transferred, return its location
-    say "Local file is: $local_file\n";
+    $self->say "Local file is: $local_file\n";
     return $local_file;
 }
 ######################################################################
@@ -208,7 +220,7 @@ sub _http {
 	# write to disk
 	my $html = $response->content;
 	CORE::open(HTML, ">$local_file") or
-	  Carp::croak "Can't save HTML file $url to $local_file: $!";
+	  croak "Can't save HTML file $url to $local_file: $!";
 	print HTML $html;
 	close HTML;
 	# file transferred, return its location
@@ -222,67 +234,46 @@ sub _http {
 }
 ######################################################################
 sub _rem_newer {
-    # check the mtime of a URI against db. Return 1 if db file is older
-    # else return 0
+    # check the md5 sum of a URI against db.
+    # return md5. If not in index, md5 from MD5i eq 'none'
     # par 1 = http|ftp|file. par2 = uri
     my $self = shift();
     my ($ftype, $loc) = @_;
-    my $mtime; # file change time
-    my $dbtime = MTime($self, $loc); # mtime of indexed file
+    my $md5_file; # file checksum
 
-    say "is file newer than already indexed version?\n";
+    my $md5_db = $self->MD5($loc); # mtime of indexed file
+    # $md5_db = 'none' if not in index
+
+    $self->say "is file newer than already indexed version?\n";
     if ($ftype eq 'http') {
-	say "checking age with http\n";
-	my @http = head($loc);
-	$mtime = $http[2];
-    } elsif ($ftype eq 'file') {
-	my @file = stat($loc);
-	$mtime = $file[9];
+	$self->say "checking md5 sum with http\n";
+	my $ua = LWP::UserAgent->new(env_proxy => 1,
+				     keep_alive => 1,
+				     timeout => 30);
+	my $response = $ua->get($loc);
+	cluck "Error while getting ", $response->request->uri,
+	  " -- ", $response->status_line, "\nAborting"
+	    unless $response->is_success;
+	my $doc = $response->content();
+	$md5_file = md5_hex($doc);
+	undef $ua;
     } elsif ($ftype eq 'ftp') {
-	    my $uri = URI->new($loc);
-	    my $host = $uri->host();
-	    my $path = $uri->path();
-	    my $auth = $uri->authority(); # user:password@host
-	    my ($username, $passwd);
-	    if ($auth =~ /:/) {
-		# get username and password from $auth
-		say "authorized ftp\n";
-		$username = $auth;
-		$username =~ s/:.*//;
-		$passwd = $auth;
-		$passwd =~ s/$username://;
-		$passwd =~ s/@.*//;
-		say "Username: $username\nPassword: $passwd\n"
-	    } else {
-		# set username to anonymous, password to local (linux)
-		# email address
-		say "anonymous ftp\n";
-		$username = 'anonymous';
-		my $localhost = hostname();
-		my $me = $ENV{USER};
-		$passwd = $me . '@' . $localhost;
-		say "Username: $username\nPassword: $passwd\n"
-	    }
-
-	    say "connecting to check timestamp of $path on server $host\n";
-	    my $ftp = Net::FTP->new($host, Debug => 1) or die $@;
-	    say "logging in with username $username password $passwd\n";
-	    $ftp->login($username, $passwd);
-	    say "checking timestamp of $path\n";
-	    $mtime = $ftp->mdtm($path);
+	my $file = $self->_ftp($loc);
+	$md5_file = md5_hex($file);
+	unlink($file);
+    } elsif ($ftype eq 'file') {
+	$md5_file = md5_hex($loc);
     }
 
-    say "file timestamp : $mtime\nindex timestamp: $dbtime\n";
+    $self->say "file checksum : $md5_file\nindex checksum: $md5_db\n";
 
-    # mtimes are intervals since the epoch.
-    if ($mtime > $dbtime) {
-	# remote file is newer than one stored in database
-	say "uri is newer than indexed version\n";
-	return ($mtime, '1');
+    if ($md5_file ne $md5_db) {
+	# remote file is different from indexed version
+	$self->say "uri is different from indexed version\n";
+	return ($md5_file, 1);
     } else {
-	$mtime = 0;
-	say "uri is not newer than indexed version\n";
-	return ($mtime, '0');
+	$self->say "uri is is the same as the indexed version\n";
+	return ($md5_file, 0);
     }
 
 }
@@ -291,69 +282,56 @@ sub index_document {
     # given a document URI, add it to the index.
     # each word is to be indexed once.
     # also, only index if file is newer than database copy.
-    my ($file, $http_content_type, @head, $toIndex, $mtime, $newer, $toRemove);
+    my ($file, $http_content_type, @head, $toIndex, $md5, $changed, $toRemove);
     my $self = shift();
     my %params = @_;
-    $toRemove = 0; # define these vars to anything
-    $toIndex = 0;  # they're only checked later for eq 'Yes'
     $http_content_type = 0;
 
     my $uri = $params{uri};
 
-    say "about to index $uri\n";
+    $self->say "about to index $uri\n";
 
     # get file contents
 
     # if an ftp or http uri, call a sub to fetch the remote file, save
     # it somewhere useful (/tmp) and return the name that the file has
     # been saved under ($file)
-    my $url = URI->new($uri) or say "couldn't create URI object to check url options\n";
-    say "url is $uri\n";
-    say "URI object is $url\n";
+    my $url = URI->new($uri) or $self->say "couldn't create URI object to check url options\n";
+    $self->say "url is $uri\n";
+    $self->say "URI object is $url\n";
 
     if ($url->scheme() eq 'ftp') {
 	# an FTP address
 	# fetch and index only if remote file is newer than db
-	($mtime, $newer) = _rem_newer($self, 'ftp', $uri);
-	if ($mtime == '-1') { $toRemove = 'Yes'}
-	if ($newer == 1) {
-	    $file = _ftp($uri);
-	    $toIndex = 'Yes';
-	} else { $toIndex = 0 }
+	($md5, $changed) = $self->_rem_newer('ftp', $uri);
+	if ($changed == 1) {
+	    $file = $self->_ftp($uri);
+	}
     } elsif ($url->scheme() eq 'http') {
 	# an HTTP address
 	# fetch and index only if remote file is newer than db
-	say "fetching $uri via http\n";
-	($mtime, $newer) = _rem_newer($self, 'http', $uri);
-	if ($mtime == '-1') {
-	    $toRemove = 'Yes';
-	    say "need to remove olf version of this doc from index\n";
-	}
-	if ($newer == 1) {
-	    $file = _http($uri);
+	$self->say "fetching $uri via http\n";
+	($md5, $changed) = $self->_rem_newer('http', $uri);
+	if ($changed == 1) {
+	    $file = $self->_http($uri);
 	    @head = head($uri);
 	    $http_content_type = shift(@head);
-	    $toIndex = 'Yes';
-	} else { $toIndex = 0 }
+	}
     } elsif ($url->scheme() eq 'file') {
 	# a local file
 	my $orig_file = $url->path();
-	($mtime, $newer) = _rem_newer($self, 'file', $orig_file);
-	if ($mtime == '-1') { $toRemove = 'Yes'}
-	if ($newer == 1) {
+	($md5, $changed) = $self->_rem_newer('file', $orig_file);
+	if ($changed == 1) {
 	   $file = _get_unique_filename;
-	   system('cp', $orig_file, $file);
-	   $toIndex = 'Yes';
-       } else { $toIndex = 0 }
+	   system('cp', $orig_file, $file) or croak "Can't create temp file $file for indexing: $!";
+       }
     } else {
 	Carp::cluck "Unrecognised URI type, assuming $uri is a local file\n";
-	($mtime, $newer) = _rem_newer($self, 'file', $uri);
-	if ($mtime == '-1') { $toRemove = 'Yes'}
-	if ($newer == 1) {
+	($md5, $changed) = $self->_rem_newer($self, 'file', $uri);
+	if ($changed == 1) {
 	    $file = _get_unique_filename;
-	    system('cp', $uri, $file);
-	    $toIndex = 'Yes';
-	} else { $toIndex = 0 }
+	    system('cp', $uri, $file) or croak "Can't create temp file $file for indexing: $!";
+	}
     }
 
     # OK, now know where the file is, can open and index it
@@ -363,32 +341,28 @@ sub index_document {
     # HTML files get meta
     # description tag as description, all others get 1st paragraph of
     # file
-    if ($toRemove eq 'Yes') {
-	# remove old document first
-	say "removing old document from index\n";
-	RemoveDocument($self, $uri);
-    }
-    if ($toIndex eq 'Yes') {
-	if ( ($uri =~ /html$|htm$/i) or ($http_content_type =~ /html/) ) {
-	    say "processing $uri as html\n";
+    if ($changed == 1) {
+	if ( ($uri =~ /html$|htm$/i) or ($http_content_type =~ /html/i) ) {
+	    $self->say "processing $uri as html\n";
 	    &_store_html($self,
 			 file  => $file,
 			 uri   => $uri,
-			 mtime => $mtime);
+			 md5   => $md5);
 	} else {
 	    &_store_plain($self,
 			  file  => $file,
 			  uri   => $uri,
-			  mtime => $mtime);
+			  md5   => $md5);
 	}
     }
+    return('ok');
 }
 ######################################################################
 sub _uniqify {
     # uniqify a string
     my $str = shift;
     my $prev = 0;
-
+    $str = lc($str); # for case-insensitive matching
     my @words = split(/ /, $str);
     @words = sort @words;
     my @out = grep($_ ne $prev && ($prev = $_, 1), @words);
@@ -405,7 +379,7 @@ sub _store_plain {
     my %params = @_;
     # open the file
     CORE::open (INFILE, "<$params{file}");
-    die unless $params{mtime};
+
     # use the first non-blank line line as the title
     # and the next paragraph as the description
     my $RS = "\n\n"; # read data terminated by 2 newlines
@@ -422,8 +396,8 @@ sub _store_plain {
     $description =~ s/[^A-Za-z]+/ /gm;
 
     # store this data
-    $self->IndexFile($params{uri}, $title, $description, $params{mtime}, $doc);
-    say "URI  : $params{uri}\n",
+    $self->IndexFile($params{uri}, $title, $description, $params{md5}, $doc);
+    $self->say "URI  : $params{uri}\n",
         "Title: $title\n",
 	"Desc : $description\n",
 	"Doc: $doc\n";
@@ -438,15 +412,14 @@ sub _store_html {
     # get parameters
     my $self = shift();
     my %params = @_;
-    my ($title, $description, $keywords);
-    $title = $keywords = $description = 0;
+    my $title = 'Untitled document';
+    my $description = 'No description meta tag';
+    my $keywords;
 
     # title
     my $HTML_Parser = new HTML::TokeParser($params{file});
     if ($HTML_Parser->get_tag("title")) {
 	$title = $HTML_Parser->get_trimmed_text;
-    } else {
-	$title = 'Untitled Document';
     }
     # description and keywords
     while (my $token = $HTML_Parser->get_tag('meta')) {
@@ -464,7 +437,7 @@ sub _store_html {
     # now have the title, description and keywords seperated out, can
     # dump the rest of the HTML code
     my $plain = _get_unique_filename;
-    CORE::open PLAIN, ">$plain" or die $!;
+    CORE::open PLAIN, ">$plain";
     CORE::open INFILE, $params{file};
     my $sgmlp = new SGML::StripParser;
     $sgmlp->set_outhandle(\*PLAIN); # plain text output file
@@ -474,7 +447,7 @@ sub _store_html {
 
     # read the non-html file in.
     undef $RS;
-    CORE::open PLAIN, $plain or die $!;
+    CORE::open PLAIN, $plain;
     my $doc = <PLAIN>;
     # tidy up doc so it contains only alnums and single spaces
     $doc =~ s/[^A-Za-z]+/ /gm;
@@ -484,7 +457,7 @@ sub _store_html {
     $doc .= $keywords; # add keywords to doc content
 
     # store this data
-    $self->IndexFile($params{uri}, $title, $description, $params{mtime}, $doc);
+    $self->IndexFile($params{uri}, $title, $description, $params{md5}, $doc);
 
     # clean up temp files
     unlink($plain);
@@ -497,26 +470,26 @@ sub find_document {
     # description of each matching document
     my $self = shift;
     my %params = @_;
-    die unless ($self->{dbh});
+
     # get a fully parsed query to run
     $params{query} = $self->GetQuery(query  => $params{query},
 				     parser => $params{parser});
-    say "Got SQL query\n";
-    die unless $params{query};
-    say "Query: $params{query}\n";
+    $self->say "Got SQL query\n";
+
+    $self->say "Query: $params{query}\n";
     # the column names which will be returned when this query is run
     # are uri, title, description (in that order)
 
-    say  "preparing query\n";
+    $self->say  "preparing query\n";
     my $sth = $self->{dbh}->prepare($params{query}) or
-      Carp::cluck "error preparing query: $self->{dbh}->errstr";
-    say "executing query (", time(), ")\n";
+      cluck "Can't prepare query: $params{query}\n$self->{dbh}->errstr";
+    $self->say "executing query (", time(), ")\n";
     $sth->execute or
       cluck "Can't execute query $params{query}: $self->{dbh}->errstr";
 
     # build an array of hashrefs - each hashref refers to a single row
     # by column name
-    say "Building result array of hashrefs\n";
+    $self->say "Building result array of hashrefs\n";
     my (@documents, $hash_row);
     while ($hash_row = $sth->fetchrow_hashref) {
 	die $self->{dbh}->errstr() unless $hash_row;
@@ -561,16 +534,18 @@ files. Supports indexing local files and fetching files by HTTP and FTP.
  $dbh = DBI->connect(...); # see the DBD documentation
 
  $index = DBIx::TextSearch->new($dbh,
-                               'index_name');
+                               'index_name',
+                               {debug => 1});
 
  $index = DBIx::TextSearch->open($dbh,
-                                 ' index_name');
+                                 ' index_name',
+                                 {debug => 1});
 
  # uri is file:/// ftp:// or http://
  $index->index_document(uri => $location);
 
  # $results is a ref to an array of hashrefs
- $results = $index->find_document(query => 'foo and not bar',
+ $results = $index->find_document(query => 'foo bar',
                                   parser => 'simple');
  $results = $index->find_document(query => 'foo and not bar',
                                   parser => 'advanced');
@@ -595,20 +570,27 @@ DBD::foo modules do.
 
 =head1 METHODS
 
+All methods return a true value on success, undef on failure.
+
 =head2 new
 
  $index = DBIx::TextSearch->new($dbh,
-                                'index_name');
+                                'index_name',
+                                {debug => 1});
 
 Create a new index on the database referenced by $dbh. The database
 must exist.
 
+Debug is an optional parameter, and will dump additional debugging
+information to STDOUT
+
 =head2 open
 
  $index = DBIx::TextSearch->open($dbh,
-                                 'index_name');
+                                 'index_name',
+                                 {debug => 1});
 
-Connect to an existing index
+Connect to an existing index, options as per new() above.
 
 =head2 index_document
 
@@ -663,7 +645,7 @@ find_document returns a reference to an array of
 hash references. The hash keys are URI, title, description.
 
 The number of documents found by the last query is returned by
-C<$index->match()>
+C<$index->>C<match()>
 
 To print information on all the documents matching a query, see this
 code:
@@ -691,8 +673,32 @@ Given a URI, remove that document from the index.
 
 Text::Query::ParseAdvanced, Text::Query::ParseSimple  DBI
 
+=head2 Interested in developing your own driver modules for DBIx::TextSearch?
+
+The interfaces are all documented in DBIx::TextSearch::developing
+
 =head1 AUTHOR
 
-Stephen Patterson <s.patterson@freeuk.com> http://www.lexx.uklinux.net/
+Stephen Patterson <steve@patter.mine.nu> http://www.lexx.uklinux.net/
+
+=head1 CHANGELOG
+
+=head2 0.2
+
+=over 4
+
+=item * Creating a new index checks exising table names to avoid overwriting them.
+
+=item * Switched from using timestamps to MD5 checksums to check if a document differs from the indexed version.
+
+=back
+
+=head2 0.1
+
+=over 4
+
+=item * Initial release
+
+=back
 
 =cut

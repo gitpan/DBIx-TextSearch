@@ -1,8 +1,10 @@
 Makefile.PL
 README
+TextSearch.txt
 Tests
 lib/DBIx/TextSearch.pm
 lib/DBIx/TextSearch/Pg.pm
 lib/DBIx/TextSearch/developing.pod
-t/use.t
+t/test.t
 MANIFEST
+INSTALL
