@@ -1,0 +1,8 @@
+Makefile.PL
+README
+Tests
+lib/DBIx/TextSearch.pm
+lib/DBIx/TextSearch/Pg.pm
+lib/DBIx/TextSearch/developing.pod
+t/use.t
+MANIFEST
