@@ -1,10 +1,13 @@
 ######################################################################
 ##                                                                  ##
-##    TextSearch::Pg - Postgres specific routines for TextSearch    ##
+##    TextSearch::DB2 - DB2 specific routines for TextSearch        ##
 ##                                                                  ##
 ######################################################################
 
 package DBIx::TextSearch;
+use DBD::DB2::Constants;
+use DBD::DB2 qw($attrib_int $attrib_char $attrib_float
+                  $attrib_date $attrib_ts);
 
 ######################################################################
 sub CreateIndex {
@@ -21,9 +24,9 @@ sub CreateIndex {
     my @tables = $dbh->tables;
     my $exists = undef;
     foreach my $table (@tables) {
-	if ($table =~ m/$self->{name}_(docid|words|description)/) {
+	if ($table =~ m/$name_(docid|words|description)/) {
 	    # index tables exist
-	    croak "Creating index $self->{name} would use some existing tables. Aborting\n";
+	    croak "Creating index $name would use some existing tables. Aborting\n";
 	}
     }
 
@@ -65,8 +68,7 @@ sub IndexFile {
 	$self->RemoveDocument($uri);
     }
     $sth->finish;
-    undef $sql;
-    undef $sth;
+    undef ($sql, $sth);
 
     my $doc = \$content; # HTML::TokeParser needs a ref to document
                          # content, DBI inserts the raw ref

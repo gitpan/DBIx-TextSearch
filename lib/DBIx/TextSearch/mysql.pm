@@ -1,13 +1,13 @@
 ######################################################################
 ##                                                                  ##
-##    TextSearch::Pg - Postgres specific routines for TextSearch    ##
+##    TextSearch::mysql - MySQL specific routines for TextSearch    ##
 ##                                                                  ##
 ######################################################################
 
 package DBIx::TextSearch;
 
 ######################################################################
-sub CreateIndex {
+sub CreateIndex{
     # create database tables
     # tables: _doc_ID - URI, title, docID, md5
     #         _words  - w_ID, word
@@ -45,7 +45,7 @@ sub CreateIndex {
 sub RemoveDocument {
     # remove a single document from the database
     my ($self, $uri) = @_;
-    my $sql = "delete from $self->{name}_docid, $self->{name}_words, " .
+    my $sql = "delete from $self->{name}_docID, $self->{name}_words, " .
       "$self->{name}_description where uri='$uri' and ((w_id = d_id) and ".
       "(m_id = d_id))";
     $self->{dbh}->do($sql) or carp("Can't delete document $uri: $self->{dbh}->errstr");
@@ -58,7 +58,7 @@ sub IndexFile {
     my ($self, $uri, $title, $desc, $md5, $content) = @_;
 
     # remove this document from the index if it has been indexed previously
-    my $sql = "select d_id from $self->{name}_docid where uri = '$uri'";
+    my $sql = "select d_id from $self->{name}_docID where uri = '$uri'";
     my $sth = $self->{dbh}->prepare($sql);
     $sth->execute();
     if ($sth->rows > 0) {
@@ -73,13 +73,13 @@ sub IndexFile {
                          # SCALAR(0x...) if passed a ref.
 
     # find a unique document ID number for this document
-    my $sql_docid = "select d_id from " . $self->{name} . "_docID order " .
+    my $sql_docID = "select d_id from " . $self->{name} . "_docID order " .
 	"by d_id desc limit 1 offset 0";
-    my $sth_docid = $self->{dbh}->prepare($sql_docid);
-    $sth_docid->execute();
+    my $sth_docID = $self->{dbh}->prepare($sql_docID);
+    $sth_docID->execute();
 
-    my $docid = $sth_docid->fetchrow_array();
-    $sth_docid->finish();
+    my $docid = $sth_docID->fetchrow_array();
+    $sth_docID->finish();
     ++$docid;
 
     #
@@ -87,7 +87,7 @@ sub IndexFile {
     #
 
     # URI, title, doc_id, md5
-    my $sql_main = "insert into " . $self->{name} . "_docid " .
+    my $sql_main = "insert into " . $self->{name} . "_docID " .
 	"(uri, title, d_id, md5) values ('$uri', '$title', '$docid', '$md5')";
     $self->{dbh}->do($sql_main) or say $sql_main;
 
@@ -123,7 +123,7 @@ sub GetQuery {
 	$parser = new Text::Query($params{query},
 				  -parse => 'Text::Query::ParseSimple',
 				  -solve => 'Text::Query::SolveSQL',
-				  -build => 'Text::Query::BuildSQLPg',
+				  -build => 'Text::Query::BuildSQLMySQL',
 				  -fields_searched =>
 				  'title, description, word'
 				 );
@@ -133,7 +133,7 @@ sub GetQuery {
 
     # generate the query
     my $query = "select distinct uri, title, description from " .
-	"$self->{'name'}_docid, $self->{'name'}_description," .
+	"$self->{'name'}_docID, $self->{'name'}_description," .
 	" $self->{'name'}_words where " . $parser->matchstring() .
 	" and (( m_id=d_id) and (d_id=w_id))";
     return $query;
@@ -142,7 +142,7 @@ sub GetQuery {
 sub FlushIndex {
     # delete data from the index (not tables)
     my $self = shift();
-    my @tables = ("$self->{name}_docid",
+    my @tables = ("$self->{name}_docID",
 		  "$self->{name}_words",
 		  "$self->{name}_description");
 
@@ -158,7 +158,7 @@ sub MD5 {
     # timestamp of indexed file
     my ($self, $doc) = @_;
     print "Doc uri $doc\n";
-    my $qry = "select md5 from $self->{name}_docid where " .
+    my $qry = "select md5 from $self->{name}_docID where " .
       "uri = '$doc'";
 
     say "query for indexed md5sum: $qry\n";

@@ -22,11 +22,12 @@ use URI;
 use File::Basename;
 use HTML::TokeParser;
 use strict;
+no strict qw/refs/;
 use warnings; # - incompatible due to SGML::StripParser
 use Socket;
 use Sys::Hostname;
 use Digest::MD5 qw/md5_hex/;
-$DBIx::TextSearch::VERSION = '0.2';
+$DBIx::TextSearch::VERSION = '0.3';
 
 ######################################################################
 sub say {
@@ -89,6 +90,7 @@ sub new {
 ######################################################################
 sub open {
     # connect to an existing index (or barf if there isn't one)
+#    no strict qw/vars/;
     my $type = shift;
     my $self = {};
     my $dbh = shift;
@@ -113,10 +115,13 @@ sub open {
     }
 
     # check if this index exists
-    my @tables = $dbh->tables;
-    my $exists = undef;
+    my @tables = $self->{dbh}->tables;
+#    my @tables = $dbh->tables;
+    my $exists = 0;
     foreach my $table (@tables) {
-	if ($table =~ m/$name_(docid|words|description)/) {
+	$table =~ s/\`//g;
+	#print $table, "\n";
+	if ($table =~ m/$self->{name}_(docid|words|description)/) {
 	    # index tables exist
 	    $exists = 'True';
 	}
@@ -150,7 +155,8 @@ sub _get_unique_filename {
 }
 ######################################################################
 sub _ftp {
-    $self->say "fetching via ftp\n";
+    my $self = shift();
+    $self->say("fetching via ftp\n");
     # fetch a file via ftp and store locally
     my $url = shift();
     # parse an url like ftp://user:password@foo.bar.com/wibble/barf.txt into
@@ -168,14 +174,14 @@ sub _ftp {
 	$passwd = $auth;
 	$passwd =~ s/$username://;
 	$passwd =~ s/@.*//;
-	$self->say "auth'd ftp\nusername: $username\nPassword $passwd\n"
+	$self->say("auth'd ftp\nusername: $username\nPassword $passwd\n");
     } else {
 	# set username to anonymous, password to local (linux) email address
 	$username = 'anonymous';
 	my $hostname = `hostname`; # need to get domain name as well.
 	my $me = $ENV{USER};
 	$passwd = $me . '@' . $hostname;
-	$self->say "anon ftp\nuser : $username\npass : $passwd\n";
+	$self->say("anon ftp\nuser : $username\npass : $passwd\n");
     }
 
     # remove remote file name from $path into a separate variable
@@ -187,7 +193,7 @@ sub _ftp {
     my $local_file = _get_unique_filename();
 
     # fetch the file
-    $self->say "logging into $host as $username with password $passwd\n";
+    $self->say("logging into $host as $username with password $passwd\n");
     my $ftp = Net::FTP->new($host,
 			    Debug => 1,
 			    Passive => 1);
@@ -198,14 +204,14 @@ sub _ftp {
     $ftp->quit();
 
     # file transferred, return its location
-    $self->say "Local file is: $local_file\n";
+    $self->say("Local file is: $local_file\n");
     return $local_file;
 }
 ######################################################################
 sub _http {
     # fetch a file via http and store locally
-    my $url = shift;
-
+    my ($self, $url) = @_;
+    print "URL to fetch: $url\n";
 
     # get unique name for local file
     my $local_file = _get_unique_filename();
@@ -244,9 +250,9 @@ sub _rem_newer {
     my $md5_db = $self->MD5($loc); # mtime of indexed file
     # $md5_db = 'none' if not in index
 
-    $self->say "is file newer than already indexed version?\n";
+    $self->say("is file newer than already indexed version?\n");
     if ($ftype eq 'http') {
-	$self->say "checking md5 sum with http\n";
+	$self->say("checking md5 sum with http\n");
 	my $ua = LWP::UserAgent->new(env_proxy => 1,
 				     keep_alive => 1,
 				     timeout => 30);
@@ -265,14 +271,14 @@ sub _rem_newer {
 	$md5_file = md5_hex($loc);
     }
 
-    $self->say "file checksum : $md5_file\nindex checksum: $md5_db\n";
+    $self->say("file checksum : $md5_file\nindex checksum: $md5_db\n");
 
     if ($md5_file ne $md5_db) {
 	# remote file is different from indexed version
-	$self->say "uri is different from indexed version\n";
+	$self->say("uri is different from indexed version\n");
 	return ($md5_file, 1);
     } else {
-	$self->say "uri is is the same as the indexed version\n";
+	$self->say("uri is is the same as the indexed version\n");
 	return ($md5_file, 0);
     }
 
@@ -289,20 +295,21 @@ sub index_document {
 
     my $uri = $params{uri};
 
-    $self->say "about to index $uri\n";
+    $self->say("about to index $uri\n");
 
     # get file contents
 
     # if an ftp or http uri, call a sub to fetch the remote file, save
     # it somewhere useful (/tmp) and return the name that the file has
     # been saved under ($file)
-    my $url = URI->new($uri) or $self->say "couldn't create URI object to check url options\n";
-    $self->say "url is $uri\n";
-    $self->say "URI object is $url\n";
+    my $url = URI->new($uri) or $self->say("couldn't create URI object to check url options\n");
+    $self->say("url is $uri\n");
+    $self->say("URI object is $url\n");
 
     if ($url->scheme() eq 'ftp') {
 	# an FTP address
 	# fetch and index only if remote file is newer than db
+	$self->say("fetching $uri via ftp\n");
 	($md5, $changed) = $self->_rem_newer('ftp', $uri);
 	if ($changed == 1) {
 	    $file = $self->_ftp($uri);
@@ -310,8 +317,9 @@ sub index_document {
     } elsif ($url->scheme() eq 'http') {
 	# an HTTP address
 	# fetch and index only if remote file is newer than db
-	$self->say "fetching $uri via http\n";
+	$self->say("fetching $uri via http\n");
 	($md5, $changed) = $self->_rem_newer('http', $uri);
+	$self->say("uri is $uri\n");
 	if ($changed == 1) {
 	    $file = $self->_http($uri);
 	    @head = head($uri);
@@ -343,7 +351,7 @@ sub index_document {
     # file
     if ($changed == 1) {
 	if ( ($uri =~ /html$|htm$/i) or ($http_content_type =~ /html/i) ) {
-	    $self->say "processing $uri as html\n";
+	    $self->say("processing $uri as html\n");
 	    &_store_html($self,
 			 file  => $file,
 			 uri   => $uri,
@@ -397,10 +405,10 @@ sub _store_plain {
 
     # store this data
     $self->IndexFile($params{uri}, $title, $description, $params{md5}, $doc);
-    $self->say "URI  : $params{uri}\n",
+    $self->say("URI  : $params{uri}\n",
         "Title: $title\n",
 	"Desc : $description\n",
-	"Doc: $doc\n";
+	"Doc: $doc\n");
     # remove local copy of file
     unlink($params{file});
 }
@@ -474,22 +482,22 @@ sub find_document {
     # get a fully parsed query to run
     $params{query} = $self->GetQuery(query  => $params{query},
 				     parser => $params{parser});
-    $self->say "Got SQL query\n";
+    $self->say("Got SQL query\n");
 
-    $self->say "Query: $params{query}\n";
+    $self->say("Query: $params{query}\n");
     # the column names which will be returned when this query is run
     # are uri, title, description (in that order)
 
-    $self->say  "preparing query\n";
+    $self->say("preparing query\n");
     my $sth = $self->{dbh}->prepare($params{query}) or
       cluck "Can't prepare query: $params{query}\n$self->{dbh}->errstr";
-    $self->say "executing query (", time(), ")\n";
+    $self->say("executing query (", time(), ")\n");
     $sth->execute or
       cluck "Can't execute query $params{query}: $self->{dbh}->errstr";
 
     # build an array of hashrefs - each hashref refers to a single row
     # by column name
-    $self->say "Building result array of hashrefs\n";
+    $self->say("Building result array of hashrefs\n");
     my (@documents, $hash_row);
     while ($hash_row = $sth->fetchrow_hashref) {
 	die $self->{dbh}->errstr() unless $hash_row;
@@ -529,7 +537,7 @@ Database independent modules to index and search text/HTML
 files. Supports indexing local files and fetching files by HTTP and FTP.
 
  use DBIx::TextSearch;
- use DBIx::TextSearch::Pg; # to use postgresql
+ use DBIx::TextSearch::Pg; # to use postgresql - other drivers available
 
  $dbh = DBI->connect(...); # see the DBD documentation
 
@@ -567,6 +575,18 @@ providing a set of standard routines to index text and HTML files.
 These routines interface to a set of database specific routines (not
 separately documented) in much the same way as the perl DBI and
 DBD::foo modules do.
+
+=head1 CURRENT DRIVERS
+
+=over 4
+
+=item * DBIx::TextSearch::Pg - Postgresql driver module
+
+=item * DBIx::TextSearch::DB2 - IBM DB2 support (untested)
+
+=item * DBIx::TextSearch::Sybase - Sybase and Microsoft SQL Server
+
+=back
 
 =head1 METHODS
 
@@ -679,9 +699,17 @@ The interfaces are all documented in DBIx::TextSearch::developing
 
 =head1 AUTHOR
 
-Stephen Patterson <steve@patter.mine.nu> http://www.lexx.uklinux.net/
+Stephen Patterson <steve@patter.mine.nu> http://patter.mine.nu/
 
 =head1 CHANGELOG
+
+=head2 0.3
+
+=over 4
+
+=item * Added mysql and DB2 support (DB2 is untested as I don't have access to any systems capable of creating DB2 databases).
+
+=back
 
 =head2 0.2
 

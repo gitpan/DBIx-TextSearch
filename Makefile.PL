@@ -9,8 +9,10 @@ WriteMakefile(
 	      PREREQ_PM    => {'DBI', 'Carp', 'Env', 'English', 'Net::FTP',
 			      'LWP::Simple', 'LWP::UserAgent',
 			       'HTTP::Response', 'SGML::StripParser',
-			       'Text::Query', 'URI', 'File::Basename',
-			       'HTML::TokeParser', 'Socket', 'Sys::Hostname'
+			       'Text::Query::BuildSQL', 'URI', 
+			       'File::Basename',
+			       'HTML::TokeParser', 'Socket', 'Sys::Hostname',
+			       'Digest::MD5'
 			      },
 	      PM           => {'lib/DBIx/TextSearch.pm'
 				   => '$(INST_LIBDIR)/TextSearch.pm',
@@ -20,6 +22,6 @@ WriteMakefile(
 			           => '$(INST_LIBDIR)/TextSearch/Pg.pm'
 			       },
 	      ($] >= 5.005 ?
-	       (ABSTRACT => "Database independent text indexing. Currently postgres only",
+	       (ABSTRACT => "Database independent text indexing, Postgres, mysql and DB2 on;y at the moment",
 		AUTHOR     => 'Stephen Patterson <steve@patter.mine.nu>') :())
 	      );
